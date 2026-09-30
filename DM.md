@@ -21,8 +21,8 @@ scan.
 ## Building
 
 `docker build . -f build/docker/Dockerfile.ubuntu -t cloud-spanner-emulator:dev` — a clean build
-compiles GoogleSQL and takes a couple of hours; the `publish-dm-image` workflow does the same for
-amd64 and arm64 on a tag `v<upstream version>-dm.<n>`. To iterate, keep the build stage
+compiles GoogleSQL and takes a couple of hours. Images are built and pushed by hand; no workflow
+runs in this repository. To iterate, keep the build stage
 (`docker build --target build -t emulator-build .`), copy changed sources into a container from it
 and run `bazel build -c opt //binaries:emulator_main //binaries:gateway_main` there; a rebuild after
 a source change takes minutes.

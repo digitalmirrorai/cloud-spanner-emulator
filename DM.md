@@ -1,0 +1,33 @@
+# Digital Mirror's emulator
+
+This branch is upstream `v1.5.58` plus two commits, published as
+`ghcr.io/digitalmirrorai/cloud-spanner-emulator:<upstream version>-dm.<n>`.
+
+**The clock follows the system clock** (`common/clock.cc`). Upstream's clock steps a microsecond
+ahead of the system clock on every call made within a microsecond of the last, and never comes
+back; a strong read waits for the system clock to reach its timestamp, so every read and query
+waits the whole lead. A container that has served a day's requests answers a key read in tens of
+milliseconds instead of one. Upstream accepted this change in issue #277 in October 2025 and has not
+released it.
+
+**A query reads only the keys its filters allow** (`backend/query/queryable_table.cc`). Upstream
+reads every row of every table a query names and lets the evaluator filter. The evaluator offers its
+equality and `IN` filters before the first row; this branch turns those on the leading primary key
+columns into a key set, so a query filtered on `tenantId` reads one tenant's rows. Set
+`SPANNER_EMULATOR_DISABLE_KEY_FILTER_PUSHDOWN=1` on the container to read whole tables as before.
+`UPDATE` and `DELETE` statements are not narrowed: the evaluator does not offer their `WHERE` to the
+scan.
+
+## Building
+
+`docker build . -f build/docker/Dockerfile.ubuntu -t cloud-spanner-emulator:dev` — a clean build
+compiles GoogleSQL and takes a couple of hours; the `publish-dm-image` workflow does the same for
+amd64 and arm64 on a tag `v<upstream version>-dm.<n>`. To iterate, keep the build stage
+(`docker build --target build -t emulator-build .`), copy changed sources into a container from it
+and run `bazel build -c opt //binaries:emulator_main //binaries:gateway_main` there; a rebuild after
+a source change takes minutes.
+
+## Taking a new upstream release
+
+Rebase the two commits onto the new tag, rerun `bazel test //common:clock_test
+//backend/query:queryable_table_test`, then tag `v<version>-dm.1`.

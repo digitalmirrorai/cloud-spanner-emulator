@@ -1,6 +1,6 @@
 # Digital Mirror's emulator
 
-This branch is upstream `v1.5.58` plus three commits, published as
+This branch is upstream `v1.5.58` plus four commits, published as
 `ghcr.io/digitalmirrorai/cloud-spanner-emulator:<upstream version>-dm.<n>`.
 
 **The clock follows the system clock** (`common/clock.cc`). Upstream's clock steps a microsecond
@@ -28,6 +28,14 @@ before the first row was read. Now the options are passed by reference, each col
 kept per query engine (owned by its function catalog, since the resolved tree points at that
 catalog's functions; expressions over sequences, SQL UDFs or subqueries are never kept), and a
 graph is wrapped on the first statement that names it. `SELECT 1` on that schema: 13 ms to 1.1 ms.
+
+**A streaming query is analyzed once, not twice** (`backend/query/query_engine.cc`). Upstream's
+`ExecuteStreamingSql` handler — the one every client library uses for queries — analyzes each
+statement a first time, against a catalog built from nothing, only to ask whether it reads a change
+stream, then hands it to `ExecuteSql` to be analyzed again. A change stream query names a
+`READ_<stream>` function of a stream the schema holds, so the first pass is skipped when the schema
+has no change streams or the statement mentions no `read_` at all. `SELECT 1` through the Java
+client: 5.4 ms to 0.9 ms, what the non-streaming path already cost.
 
 ## Building
 

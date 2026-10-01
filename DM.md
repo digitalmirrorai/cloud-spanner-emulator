@@ -1,6 +1,6 @@
 # Digital Mirror's emulator
 
-This branch is upstream `v1.5.58` plus two commits, published as
+This branch is upstream `v1.5.58` plus three commits, published as
 `ghcr.io/digitalmirrorai/cloud-spanner-emulator:<upstream version>-dm.<n>`.
 
 **The clock follows the system clock** (`common/clock.cc`). Upstream's clock steps a microsecond
@@ -18,6 +18,17 @@ columns into a key set, so a query filtered on `tenantId` reads one tenant's row
 `UPDATE` and `DELETE` statements are not narrowed: the evaluator does not offer their `WHERE` to the
 scan.
 
+**A statement no longer pays for the schema** (`backend/query/catalog.cc`,
+`backend/query/queryable_table.cc`, `backend/query/column_expression_analysis_cache.*`,
+`backend/query/queryable_property_graph.cc`). Upstream builds a catalog for every statement and,
+doing so, deep-copied the analyzer options once per table and once per column, analyzed every
+default and generated column expression, and wrapped every property graph with all its property
+definitions: 25 ms per statement on a schema of 195 tables, 59 expression columns and one graph,
+before the first row was read. Now the options are passed by reference, each column analysis is
+kept per query engine (owned by its function catalog, since the resolved tree points at that
+catalog's functions; expressions over sequences, SQL UDFs or subqueries are never kept), and a
+graph is wrapped on the first statement that names it. `SELECT 1` on that schema: 13 ms to 1.1 ms.
+
 ## Building
 
 `docker build . -f build/docker/Dockerfile.ubuntu -t cloud-spanner-emulator:dev` — a clean build
@@ -29,5 +40,5 @@ a source change takes minutes.
 
 ## Taking a new upstream release
 
-Rebase the two commits onto the new tag, rerun `bazel test //common:clock_test
-//backend/query:queryable_table_test`, then tag `v<version>-dm.1`.
+Rebase the three commits onto the new tag, rerun `bazel test //common:clock_test
+//backend/query:queryable_table_test //backend/query:catalog_test //backend/query:query_engine_test`, then tag `v<version>-dm.1`.

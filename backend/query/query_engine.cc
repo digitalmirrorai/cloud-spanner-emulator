@@ -1376,7 +1376,15 @@ absl::StatusOr<QueryResult> QueryEngine::ExecuteSql(
                    MakeAnalyzerOptionsWithParameters(
                        normalized_query.declared_params,
                        GetTimeZone(function_catalog_.GetLatestSchema())));
-  analyzer_options.set_prune_unused_columns(true);
+  // A modifying statement, and a statement naming a graph, are executed from
+  // an analysis that keeps every column. Knowing them by their text analyzes
+  // them once with that setting, instead of once to find out and once again.
+  const bool keep_all_columns =
+      context.schema->dialect() != database_api::DatabaseDialect::POSTGRESQL &&
+      !normalized_query.change_stream_internal_lookup.has_value() &&
+      (IsDMLStmt(googlesql::GetStatementKind(normalized_query.sql)) ||
+       absl::StrContainsIgnoreCase(normalized_query.sql, "graph"));
+  analyzer_options.set_prune_unused_columns(!keep_all_columns);
   DM_LAP("qe.1_normalize_and_analyzer_options", dm_t);
 
   QueryEvaluatorForEngine view_evaluator(*this, context,
@@ -1401,7 +1409,8 @@ absl::StatusOr<QueryResult> QueryEngine::ExecuteSql(
                      Analyze(normalized_query.sql, catalog.get(),
                              analyzer_options, type_factory_));
 
-    if (analyzer_output->has_graph_references()) {
+    if (analyzer_output->has_graph_references() &&
+        analyzer_options.prune_unused_columns()) {
       analyzer_options.set_prune_unused_columns(false);
       catalog = std::make_unique<Catalog>(
           context.schema, &function_catalog_, type_factory_, analyzer_options,
@@ -1448,21 +1457,24 @@ absl::StatusOr<QueryResult> QueryEngine::ExecuteSql(
     DM_LAP("qe.7_evaluate_query", dm_t);
   } else {
     GOOGLESQL_RET_CHECK_NE(context.writer, nullptr);
-    analyzer_options.set_prune_unused_columns(false);
-    if (context.schema->dialect() ==
-        database_api::DatabaseDialect::POSTGRESQL) {
-      GOOGLESQL_ASSIGN_OR_RETURN(analyzer_output,
-                       AnalyzePostgreSQL(normalized_query.sql, catalog.get(),
-                                         analyzer_options, type_factory_,
-                                         &function_catalog_));
-    } else {
-      GOOGLESQL_ASSIGN_OR_RETURN(analyzer_output,
-                       Analyze(normalized_query.sql, catalog.get(),
-                               analyzer_options, type_factory_));
+    // Analyzed with every column already unless pruning was on.
+    if (analyzer_options.prune_unused_columns()) {
+      analyzer_options.set_prune_unused_columns(false);
+      if (context.schema->dialect() ==
+          database_api::DatabaseDialect::POSTGRESQL) {
+        GOOGLESQL_ASSIGN_OR_RETURN(analyzer_output,
+                         AnalyzePostgreSQL(normalized_query.sql, catalog.get(),
+                                           analyzer_options, type_factory_,
+                                           &function_catalog_));
+      } else {
+        GOOGLESQL_ASSIGN_OR_RETURN(analyzer_output,
+                         Analyze(normalized_query.sql, catalog.get(),
+                                 analyzer_options, type_factory_));
+      }
+      GOOGLESQL_ASSIGN_OR_RETURN(resolved_statement,
+                       ExtractValidatedResolvedStatementAndOptions(
+                           analyzer_output.get(), context, catalog.get()));
     }
-    GOOGLESQL_ASSIGN_OR_RETURN(resolved_statement,
-                     ExtractValidatedResolvedStatementAndOptions(
-                         analyzer_output.get(), context, catalog.get()));
     DM_LAP("qe.8_dml_reanalyze_and_validate", dm_t);
 
     // Only execute the SQL statement if the user did not request PLAN mode.

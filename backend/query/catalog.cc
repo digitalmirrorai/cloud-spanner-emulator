@@ -275,13 +275,11 @@ Catalog::Catalog(
   ColumnExpressionAnalysisCache* analyses = column_analyses_;
   DM_LAP("catalog.2_copy_options", dm_t);
   for (const auto* table : schema->tables()) {
-    std::string name = table->Name();
-    if (!SDLObjectName::IsFullyQualifiedName(name)) {
-      unwrapped_tables_[name] = {table, /*is_synonym=*/false};
-      if (!table->synonym().empty() &&
-          !SDLObjectName::IsFullyQualifiedName(table->synonym())) {
-        unwrapped_tables_[table->synonym()] = {table, /*is_synonym=*/true};
-      }
+    const std::string& name = table->Name();
+    if (!SDLObjectName::IsFullyQualifiedName(name) &&
+        !SDLObjectName::IsFullyQualifiedName(table->synonym())) {
+      // Wrapped by FindOrWrapTable when a statement names it.
+      continue;
     }
     if (SDLObjectName::IsFullyQualifiedName(name)) {
       absl::Status status = AddObjectToNamedSchema(
@@ -395,19 +393,27 @@ const QueryableTable* Catalog::FindOrWrapTable(const std::string& name) const {
   if (auto it = tables_.find(name); it != tables_.end()) {
     return it->second.get();
   }
-  auto unwrapped = unwrapped_tables_.find(name);
-  if (unwrapped == unwrapped_tables_.end()) {
+  // Tables of a named schema are reached through that schema's catalog.
+  bool is_synonym = false;
+  const Table* table = schema_->FindTable(name);
+  if (table == nullptr) {
+    table = schema_->FindTableUsingSynonym(name);
+    is_synonym = table != nullptr;
+  }
+  if (table == nullptr ||
+      SDLObjectName::IsFullyQualifiedName(is_synonym ? table->synonym()
+                                                     : table->Name())) {
     return nullptr;
   }
-  UnwrappedTable entry = unwrapped->second;
-  unwrapped_tables_.erase(unwrapped);
   // The key of `tables_` is the name the schema gives, not the spelling looked
   // up, as when every table was wrapped up front.
-  const std::string key =
-      entry.is_synonym ? entry.table->synonym() : entry.table->Name();
+  const std::string key = is_synonym ? table->synonym() : table->Name();
+  if (auto it = tables_.find(key); it != tables_.end()) {
+    return it->second.get();
+  }
   auto wrapped = std::make_unique<QueryableTable>(
-      entry.table, reader_, table_options_, const_cast<Catalog*>(this),
-      type_factory_, entry.is_synonym, column_analyses_);
+      table, reader_, table_options_, const_cast<Catalog*>(this),
+      type_factory_, is_synonym, column_analyses_);
   const QueryableTable* result = wrapped.get();
   tables_[key] = std::move(wrapped);
   return result;
@@ -418,13 +424,11 @@ void Catalog::WrapAllTables() const {
     return;
   }
   all_tables_wrapped_ = true;
-  std::vector<std::string> names;
-  names.reserve(unwrapped_tables_.size());
-  for (const auto& [name, unused] : unwrapped_tables_) {
-    names.push_back(name);
-  }
-  for (const std::string& name : names) {
-    FindOrWrapTable(name);
+  for (const Table* table : schema_->tables()) {
+    FindOrWrapTable(table->Name());
+    if (!table->synonym().empty()) {
+      FindOrWrapTable(table->synonym());
+    }
   }
   for (const auto& tablepair : tables_) {
     const QueryableTable* table = tablepair.second.get();

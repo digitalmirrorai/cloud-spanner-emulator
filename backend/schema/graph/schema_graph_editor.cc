@@ -134,12 +134,7 @@ absl::Status SchemaGraphEditor::AddNode(
 }
 
 bool SchemaGraphEditor::IsOriginalNode(const SchemaNode* node) const {
-  for (const auto* schema_node : original_graph_->GetSchemaNodes()) {
-    if (schema_node == node) {
-      return true;
-    }
-  }
-  return false;
+  return original_nodes_.contains(node);
 }
 
 absl::StatusOr<std::unique_ptr<SchemaGraph>>

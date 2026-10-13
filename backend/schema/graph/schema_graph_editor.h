@@ -65,6 +65,8 @@ class SchemaGraphEditor {
                     SchemaValidationContext* context)
       : original_graph_(original_graph),
         context_(context),
+        original_nodes_(original_graph->GetSchemaNodes().begin(),
+                        original_graph->GetSchemaNodes().end()),
         cloned_pool_(std::make_unique<SchemaObjectsPool>()) {
     context_->set_added_nodes(&added_nodes_);
   }
@@ -288,6 +290,11 @@ class SchemaGraphEditor {
 
   // Number of deleted nodes.
   int trimmed_ = 0;
+
+  // The nodes of `original_graph_`. Telling an original node apart is asked
+  // for every node reference a clone fixes up; a scan of the graph each time
+  // made a statement cost the square of the schema size.
+  absl::flat_hash_set<const SchemaNode*> original_nodes_;
 
   // Mapping of original nodes to clones.
   absl::flat_hash_map<const SchemaNode*, const SchemaNode*> clone_map_;

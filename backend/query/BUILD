@@ -567,6 +567,7 @@ cc_library(
         "catalog.h",
     ],
     deps = [
+        "//common:phase_timer",
         ":analyzer_options",
         ":function_catalog",
         ":information_schema_catalog",

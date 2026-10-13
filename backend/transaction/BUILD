@@ -33,6 +33,7 @@ cc_library(
         "read_write_transaction.h",
     ],
     deps = [
+        "//common:phase_timer",
         ":actions",
         ":commit_timestamp",
         ":flush",

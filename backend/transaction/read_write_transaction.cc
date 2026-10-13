@@ -15,6 +15,7 @@
 //
 
 #include "backend/transaction/read_write_transaction.h"
+#include "common/phase_timer.h"
 
 #include <functional>
 #include <map>
@@ -506,9 +507,11 @@ absl::Status ReadWriteTransaction::Write(const Mutation& mutation) {
     // ValueContentLess in datatypes/extended/pg_numeric_type.cc) and therefore
     // requires a PG arena.
     GOOGLESQL_VLOG(1) << "Creating memory context and Processing Write mutations";
+    DM_T0(dm_t);
     GOOGLESQL_ASSIGN_OR_RETURN(
         std::unique_ptr<postgres_translator::interfaces::PGArena> arena,
         postgres_translator::spangres::MemoryContextPGArena::Init(nullptr));
+    DM_LAP("rwtx.write.1_pg_arena", dm_t);
 
     for (const MutationOp& mutation_op : mutation.ops()) {
       GOOGLESQL_ASSIGN_OR_RETURN(
@@ -531,16 +534,20 @@ absl::Status ReadWriteTransaction::Write(const Mutation& mutation) {
         key_ranges.insert(key_ranges.end(),
                           resolved_mutation_op.key_ranges.begin(),
                           resolved_mutation_op.key_ranges.end());
+        DM_LAP("rwtx.write.2_resolve_delete", dm_t);
         GOOGLESQL_ASSIGN_OR_RETURN(std::vector<WriteOp> write_ops,
                          FlattenDeleteOp(resolved_mutation_op.table,
                                          resolved_mutation_op.key_ranges,
                                          transaction_store_.get()));
+        DM_LAP("rwtx.write.3_flatten_delete", dm_t);
         GOOGLESQL_RETURN_IF_ERROR(ProcessWriteOps(write_ops));
+        DM_LAP("rwtx.write.4_process_delete_ops(validators+effectors+buffer)", dm_t);
       } else {
         // Process non-delete Mutation ops.
         GOOGLESQL_RETURN_IF_ERROR(ValidateNonDeleteMutationOp(mutation_op, schema_));
         GOOGLESQL_ASSIGN_OR_RETURN(ResolvedMutationOp resolved_mutation_op,
                          ResolveNonDeleteMutationOp(mutation_op, schema_));
+        DM_LAP("rwtx.write.2_validate_resolve_nondelete", dm_t);
         const std::string& table_name = resolved_mutation_op.table->Name();
 
         // Process Insert, Update, Replace and InsertOrUpdate.
@@ -591,9 +598,11 @@ absl::Status ReadWriteTransaction::Write(const Mutation& mutation) {
 
           GOOGLESQL_RETURN_IF_ERROR(ProcessWriteOps(write_ops));
         }
+        DM_LAP("rwtx.write.3_flatten_and_process_nondelete_rows", dm_t);
       }
     }
     GOOGLESQL_RETURN_IF_ERROR(ApplyStatementVerifiers());
+    DM_LAP("rwtx.write.5_statement_verifiers", dm_t);
     // We defer all commit timestamp tracking to the end of the write to avoid
     // effector reads being rejected because of a previously written op in the
     // same call to ReadWriteTransaction::Write (e.g. updates to two rows in the
@@ -601,6 +610,7 @@ absl::Status ReadWriteTransaction::Write(const Mutation& mutation) {
     // to effector reads if the updates are split into separate Write calls, but
     // should succeed if written together).
     UpdateTrackedCommitTimestamps();
+    DM_LAP("rwtx.write.6_track_commit_ts", dm_t);
     return absl::OkStatus();
   });
 }
@@ -609,10 +619,12 @@ absl::Status ReadWriteTransaction::Commit() {
   return GuardedCall(OpType::kCommit, [&]() -> absl::Status {
     mu_.AssertHeld();
 
+    DM_T0(dm_t);
     if (retry_state_.abort_retry_count == 0 && ShouldAbortOnFirstCommit()) {
       return error::AbortReadWriteTransactionOnFirstCommit(id_);
     }
     GOOGLESQL_RETURN_IF_ERROR(ProcessChangeStreamWriteOps());
+    DM_LAP("rwtx.commit.1_change_stream_ops", dm_t);
 
     // When committing, comparison may be required in the process. Comparison of
     // PG.NUMERIC calls PG to get comparison result (see function
@@ -623,12 +635,15 @@ absl::Status ReadWriteTransaction::Commit() {
         std::unique_ptr<postgres_translator::interfaces::PGArena> arena,
         postgres_translator::spangres::MemoryContextPGArena::Init(nullptr));
 
+    DM_LAP("rwtx.commit.2_pg_arena", dm_t);
     // Pick a commit timestamp.
     GOOGLESQL_ASSIGN_OR_RETURN(commit_timestamp_, lock_handle_->ReserveCommitTimestamp());
+    DM_LAP("rwtx.commit.3_reserve_ts", dm_t);
 
     // Write the mutations to the base storage.
     absl::Status flush_status = FlushWriteOpsToStorage(
         transaction_store_->GetBufferedOps(), base_storage_, commit_timestamp_);
+    DM_LAP("rwtx.commit.4_flush_to_storage", dm_t);
     GOOGLESQL_RETURN_IF_ERROR(lock_handle_->MarkCommitted());
     if (!flush_status.ok()) {
       return flush_status;
@@ -639,6 +654,7 @@ absl::Status ReadWriteTransaction::Commit() {
 
     // Unlock all locks.
     lock_handle_->UnlockAll();
+    DM_LAP("rwtx.commit.5_mark_and_unlock", dm_t);
 
     return absl::OkStatus();
   });

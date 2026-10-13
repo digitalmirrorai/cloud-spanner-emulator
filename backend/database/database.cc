@@ -15,6 +15,7 @@
 //
 
 #include "backend/database/database.h"
+#include "common/phase_timer.h"
 
 #include <memory>
 #include <thread>  // NOLINT
@@ -96,15 +97,18 @@ absl::StatusOr<std::unique_ptr<Database>> Database::Create(
         std::make_unique<VersionedCatalog>(std::move(schema));
   }
 
+  DM_T0(dm_t);
   database->query_engine_ = std::make_unique<QueryEngine>(
       database->type_factory_.get(),
       database->versioned_catalog_->GetLatestSchema());
+  DM_LAP("db.create.query_engine", dm_t);
 
   database->action_manager_->AddActionsForSchema(
       database->versioned_catalog_->GetLatestSchema(),
       database->query_engine_->function_catalog(),
       database->query_engine_->type_factory());
 
+  DM_LAP("db.create.add_actions_for_schema", dm_t);
   database->change_stream_partition_churner_ =
       std::make_unique<ChangeStreamPartitionChurner>(
           absl::bind_front(&Database::CreateReadWriteTransaction,
@@ -121,6 +125,7 @@ absl::StatusOr<std::unique_ptr<Database>> Database::Create(
 
   database->storage_->SetVersionRetentionPeriod(
       database->versioned_catalog_->version_retention_period());
+  DM_LAP("db.create.rest", dm_t);
 
   return database;
 }

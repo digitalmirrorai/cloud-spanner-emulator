@@ -92,6 +92,7 @@ cc_library(
         "server.h",
     ],
     deps = [
+        "//common:phase_timer",
         ":environment",
         ":handler",
         ":request_context",

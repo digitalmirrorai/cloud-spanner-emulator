@@ -15,6 +15,7 @@
 //
 
 #include "backend/schema/updater/schema_updater.h"
+#include "common/phase_timer.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -859,9 +860,11 @@ SchemaUpdaterImpl::ApplyDDLStatement(
   }
 
   GOOGLESQL_RET_CHECK(!editor_->HasModifications());
+  DM_T0(dm_t);
   GOOGLESQL_ASSIGN_OR_RETURN(std::unique_ptr<ddl::DDLStatement> ddl_statement,
                    ParseDDLByDialect(statement, dialect));
   GOOGLESQL_RETURN_IF_ERROR(ValidateDdlStatement(*ddl_statement, dialect));
+  DM_LAP("ddl.stmt.1_parse", dm_t);
   // Apply the statement to the schema graph.
   auto proto_bundle = latest_schema_->proto_bundle();
   switch (ddl_statement->statement_case()) {
@@ -1193,9 +1196,13 @@ SchemaUpdaterImpl::ApplyDDLStatement(
   // generation). If there is a need to access proto_bundle after
   // validation, please use schema->proto_bundle().
   statement_context_->set_proto_bundle(proto_bundle);
+  DM_LAP("ddl.stmt.2_apply_to_editor", dm_t);
   GOOGLESQL_ASSIGN_OR_RETURN(auto new_schema_graph, editor_->CanonicalizeGraph());
-  return std::make_unique<const OwningSchema>(
+  DM_LAP("ddl.stmt.3_canonicalize_graph", dm_t);
+  auto dm_schema = std::make_unique<const OwningSchema>(
       std::move(new_schema_graph), proto_bundle, dialect, database_id_);
+  DM_LAP("ddl.stmt.4_owning_schema_ctor", dm_t);
+  return dm_schema;
 }
 
 absl::StatusOr<std::vector<SchemaValidationContext>>
@@ -1230,6 +1237,7 @@ SchemaUpdaterImpl::ApplyDDLStatements(
         });
 
     // Initialize the editor that will be used to stage the schema changes.
+    DM_PHASE("ddl.stmt.0_total");
     editor_ = std::make_unique<SchemaGraphEditor>(
         latest_schema_->GetSchemaGraph(), statement_context_);
 
@@ -6965,6 +6973,7 @@ SchemaUpdater::ValidateSchemaFromDDL(
 // TODO : These should run in a ReadWriteTransaction with rollback
 // capability so that changes to the database can be reversed.
 absl::Status SchemaUpdater::RunPendingActions(int* num_succesful) {
+  DM_PHASE("ddl.run_pending_actions_total");
   for (const auto& pending_statement : pending_work_) {
     GOOGLESQL_RETURN_IF_ERROR(pending_statement.RunSchemaChangeActions());
     ++(*num_succesful);
@@ -6983,8 +6992,10 @@ absl::StatusOr<SchemaChangeResult> SchemaUpdater::UpdateSchemaFromDDL(
                        context.schema_change_timestamp, context.pg_oid_assigner,
                        existing_schema, context.database_id));
   context.pg_oid_assigner->BeginAssignment();
+  DM_T0(dm_u);
   GOOGLESQL_ASSIGN_OR_RETURN(pending_work_,
                    updater.ApplyDDLStatements(schema_change_operation));
+  DM_LAP("ddl.apply_ddl_statements_total", dm_u);
   intermediate_schemas_ = updater.GetIntermediateSchemas();
 
   // Use the schema snapshot for the last succesful statement.

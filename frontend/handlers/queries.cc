@@ -50,6 +50,7 @@
 #include "frontend/handlers/change_streams.h"
 #include "frontend/proto/partition_token.pb.h"
 #include "frontend/server/handler.h"
+#include "common/phase_timer.h"
 #include "frontend/server/request_context.h"
 #include "googlesql/base/status_macros.h"
 #include "farmhash.h"
@@ -392,8 +393,10 @@ absl::Status ExecuteStreamingSql(
     ServerStream<spanner_api::PartialResultSet>* stream) {
   // Take shared ownerships of session and transaction so that they will keep
   // valid throughout this function.
+  DM_T0(dm_t);
   GOOGLESQL_ASSIGN_OR_RETURN(std::shared_ptr<Session> session,
                    GetSession(ctx, request->session()));
+  DM_LAP("ess.1_get_session", dm_t);
 
   backend::ChangeStreamQueryValidator::ChangeStreamMetadata
       change_stream_metadata;
@@ -405,6 +408,7 @@ absl::Status ExecuteStreamingSql(
                                                       is_dml_query));
   GOOGLESQL_ASSIGN_OR_RETURN(std::shared_ptr<Transaction> txn,
                    session->FindOrInitTransaction(request->transaction()));
+  DM_LAP("ess.2_find_or_init_txn", dm_t);
   GOOGLESQL_RETURN_IF_ERROR(
       ValidateDirectedReadsOption(request->directed_read_options(), txn));
 
@@ -412,6 +416,7 @@ absl::Status ExecuteStreamingSql(
   absl::Status status = txn->GuardedCall(
       is_dml_query ? Transaction::OpType::kDml : Transaction::OpType::kSql,
       [&]() -> absl::Status {
+        DM_LAP("ess.3_guarded_call_entry", dm_t);
         if (request->data_boost_enabled()) {
           if (request->partition_token().empty()) {
             return error::DataBoostRequiresPartitionToken();
@@ -474,16 +479,19 @@ absl::Status ExecuteStreamingSql(
                 txn->query_engine()->type_factory(),
                 txn->schema()->proto_bundle(),
                 request->request_options().client_context().secure_context()));
+        DM_LAP("ess.4_validate_and_query_from_proto", dm_t);
         bool in_read_write_txn = txn->IsReadWrite() || txn->IsPartitionedDml();
         GOOGLESQL_ASSIGN_OR_RETURN(change_stream_metadata,
                          backend::QueryEngine::TryGetChangeStreamMetadata(
                              query, txn->schema(), in_read_write_txn));
         // if current query is a change stream query, return and exit current
         // transaction lambda to avoid nested transaction call.
+        DM_LAP("ess.5_change_stream_check", dm_t);
         if (change_stream_metadata.is_change_stream_query) {
           return absl::OkStatus();
         }
         auto maybe_result = txn->ExecuteSql(query, request->query_mode());
+        DM_LAP("ess.6_txn_execute_sql", dm_t);
         if (!maybe_result.ok()) {
           absl::Status error = maybe_result.status();
           if (txn->IsPartitionedDml()) {
@@ -563,19 +571,23 @@ absl::Status ExecuteStreamingSql(
               result, responses.front().mutable_stats()->mutable_query_stats());
         }
 
+        DM_LAP("ess.7_build_partial_result_sets", dm_t);
         // Send results back to client.
         for (const auto& response : responses) {
           stream->Send(response);
         }
 
+        DM_LAP("ess.8_stream_send", dm_t);
         if (is_dml_query) {
           spanner_api::ResultSet replay_result;
           *replay_result.mutable_stats() = responses[0].stats();
           *replay_result.mutable_metadata() = responses[0].metadata();
           txn->SetDmlReplayOutcome(replay_result);
         }
+        DM_LAP("ess.9_dml_replay_record", dm_t);
         return absl::OkStatus();
       });
+  DM_LAP("ess.10_guarded_call_exit", dm_t);
   if (change_stream_metadata.is_change_stream_query) {
     ChangeStreamsHandler change_streams_handler{change_stream_metadata};
     return change_streams_handler.ExecuteChangeStreamQuery(request, stream,

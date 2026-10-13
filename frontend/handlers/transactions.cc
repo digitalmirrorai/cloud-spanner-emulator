@@ -26,6 +26,7 @@
 #include "absl/time/time.h"
 #include "backend/access/write.h"
 #include "common/errors.h"
+#include "common/phase_timer.h"
 #include "frontend/converters/mutations.h"
 #include "frontend/converters/time.h"
 #include "frontend/entities/session.h"
@@ -52,10 +53,12 @@ absl::Status BeginTransaction(
                    session_manager->GetSession(request->session()));
 
   // Create a new transaction.
+  DM_T0(dm_t);
   GOOGLESQL_ASSIGN_OR_RETURN(
       std::shared_ptr<Transaction> txn,
       session->CreateMultiUseTransaction(
           request->options(), Session::TransactionActivation::kInitializeOnly));
+  DM_LAP(request->options().has_read_only() ? "begin.ro_create_multi_use_txn" : "begin.rw_create_multi_use_txn", dm_t);
 
   // Populate transaction proto in response.
   GOOGLESQL_ASSIGN_OR_RETURN(*response, txn->ToProto());
@@ -89,8 +92,10 @@ absl::Status Commit(RequestContext* ctx,
                     const spanner_api::CommitRequest* request,
                     spanner_api::CommitResponse* response) {
   // Get session information.
+  DM_T0(dm_t);
   GOOGLESQL_ASSIGN_OR_RETURN(std::shared_ptr<Session> session,
                    GetSession(ctx, request->session()));
+  DM_LAP("commit.1_get_session", dm_t);
 
   // Get transaction object to commit.
   absl::StatusOr<std::shared_ptr<Transaction>> maybe_txn;
@@ -109,9 +114,11 @@ absl::Status Commit(RequestContext* ctx,
   }
 
   GOOGLESQL_ASSIGN_OR_RETURN(std::shared_ptr<Transaction> txn, maybe_txn);
+  DM_LAP(is_single_use ? "commit.2_create_single_use_txn" : "commit.2_find_txn", dm_t);
 
   // Wrap all operations on this transaction so they are atomic .
   return txn->GuardedCall(Transaction::OpType::kCommit, [&]() -> absl::Status {
+    DM_LAP("commit.3_guarded_call_entry", dm_t);
     // Cannot commit a ReadOnlyTransaction.
     if (txn->IsReadOnly()) {
       return error::CannotCommitRollbackReadOnlyOrPartitionedDmlTransaction();
@@ -138,17 +145,21 @@ absl::Status Commit(RequestContext* ctx,
     backend::Mutation mutation;
     GOOGLESQL_RETURN_IF_ERROR(
         MutationFromProto(*txn->schema(), request->mutations(), &mutation));
+    DM_LAP("commit.4_mutation_from_proto", dm_t);
     GOOGLESQL_RETURN_IF_ERROR(txn->Write(mutation));
+    DM_LAP("commit.5_txn_write", dm_t);
 
     if (txn->IsReadWrite() && session->multiplexed() && !is_single_use &&
         !request->has_precommit_token()) {
       // A lightweight commit retry protocol.
       response->mutable_precommit_token();
+      DM_LAP("commit.X_returned_precommit_token_for_retry", dm_t);
       return absl::OkStatus();
     }
 
     // Actually commit the request.
     GOOGLESQL_RETURN_IF_ERROR(txn->Commit());
+    DM_LAP("commit.6_txn_commit", dm_t);
 
     // Return commit timestamp to user.
     GOOGLESQL_ASSIGN_OR_RETURN(absl::Time commit_timestamp, txn->GetCommitTimestamp());

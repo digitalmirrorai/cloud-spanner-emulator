@@ -32,6 +32,7 @@ cc_library(
         "database.h",
     ],
     deps = [
+        "//common:phase_timer",
         "//backend/actions:manager",
         "//backend/common:ids",
         "//backend/database/change_stream:change_stream_partition_churner",

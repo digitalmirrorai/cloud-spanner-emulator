@@ -15,6 +15,7 @@
 //
 
 #include "backend/query/query_engine.h"
+#include "common/phase_timer.h"
 
 #include <algorithm>
 #include <cassert>
@@ -885,7 +886,9 @@ absl::StatusOr<std::unique_ptr<RowCursor>> EvaluateQuery(
   // statement.
   GOOGLESQL_ASSIGN_OR_RETURN(auto analyzer_options,
                    MakeAnalyzerOptionsWithParameters(params, time_zone));
+  DM_T0(dm_e);
   GOOGLESQL_RETURN_IF_ERROR(prepared_query->Prepare(analyzer_options));
+  DM_LAP("eval.1_prepare", dm_e);
 
   // Get the query metadata from the prepared query.
   std::vector<std::string> names;
@@ -906,6 +909,7 @@ absl::StatusOr<std::unique_ptr<RowCursor>> EvaluateQuery(
   } else {
     // Finally execute the query.
     GOOGLESQL_ASSIGN_OR_RETURN(auto iterator, prepared_query->Execute(params));
+    DM_LAP("eval.2_execute_open", dm_e);
 
     while (iterator->NextRow()) {
       values.emplace_back();
@@ -915,6 +919,7 @@ absl::StatusOr<std::unique_ptr<RowCursor>> EvaluateQuery(
       }
     }
     GOOGLESQL_RETURN_IF_ERROR(iterator->Status());
+    DM_LAP("eval.3_iterate_rows", dm_e);
     *num_output_rows = values.size();
     return std::make_unique<VectorsRowCursor>(names, types, values);
   }
@@ -1363,6 +1368,7 @@ absl::StatusOr<QueryResult> QueryEngine::ExecuteSql(
     const Query& query, const QueryContext& context,
     v1::ExecuteSqlRequest_QueryMode query_mode) const {
   absl::Time start_time = absl::Now();
+  DM_T0(dm_t);
 
   Query normalized_query;
   NormalizeParameterNames(context.schema, query, &normalized_query);
@@ -1371,6 +1377,7 @@ absl::StatusOr<QueryResult> QueryEngine::ExecuteSql(
                        normalized_query.declared_params,
                        GetTimeZone(function_catalog_.GetLatestSchema())));
   analyzer_options.set_prune_unused_columns(true);
+  DM_LAP("qe.1_normalize_and_analyzer_options", dm_t);
 
   QueryEvaluatorForEngine view_evaluator(*this, context,
                                          normalized_query.secure_context);
@@ -1379,6 +1386,7 @@ absl::StatusOr<QueryResult> QueryEngine::ExecuteSql(
       context.reader, &view_evaluator,
       normalized_query.change_stream_internal_lookup,
       normalized_query.secure_context);
+  DM_LAP("qe.2_catalog_ctor", dm_t);
 
   std::unique_ptr<const googlesql::AnalyzerOutput> analyzer_output;
   if (context.schema->dialect() == database_api::DatabaseDialect::POSTGRESQL &&
@@ -1405,12 +1413,15 @@ absl::StatusOr<QueryResult> QueryEngine::ExecuteSql(
     }
   }
 
+  DM_LAP("qe.3_analyze", dm_t);
   GOOGLESQL_ASSIGN_OR_RETURN(auto params,
                    ExtractParameters(normalized_query, analyzer_output.get()));
+  DM_LAP("qe.4_extract_params", dm_t);
 
   GOOGLESQL_ASSIGN_OR_RETURN(auto resolved_statement,
                    ExtractValidatedResolvedStatementAndOptions(
                        analyzer_output.get(), context, catalog.get()));
+  DM_LAP("qe.5_validate_rewrite", dm_t);
 
   // Change stream queries are not directly executed via this generic ExecuteSql
   // function in query engine. If a change stream query reaches here, it is from
@@ -1424,6 +1435,7 @@ absl::StatusOr<QueryResult> QueryEngine::ExecuteSql(
   if (is_change_stream) {
     return error::ChangeStreamQueriesMustBeStreaming();
   }
+  DM_LAP("qe.6_change_stream_validator", dm_t);
 
   QueryResult result;
   if (!IsDMLStmt(analyzer_output->resolved_statement()->node_kind())) {
@@ -1433,6 +1445,7 @@ absl::StatusOr<QueryResult> QueryEngine::ExecuteSql(
                       &result.num_output_rows, query_mode,
                       GetTimeZone(function_catalog_.GetLatestSchema())));
     result.rows = std::move(cursor);
+    DM_LAP("qe.7_evaluate_query", dm_t);
   } else {
     GOOGLESQL_RET_CHECK_NE(context.writer, nullptr);
     analyzer_options.set_prune_unused_columns(false);
@@ -1450,6 +1463,7 @@ absl::StatusOr<QueryResult> QueryEngine::ExecuteSql(
     GOOGLESQL_ASSIGN_OR_RETURN(resolved_statement,
                      ExtractValidatedResolvedStatementAndOptions(
                          analyzer_output.get(), context, catalog.get()));
+    DM_LAP("qe.8_dml_reanalyze_and_validate", dm_t);
 
     // Only execute the SQL statement if the user did not request PLAN mode.
     if (query_mode != v1::ExecuteSqlRequest::PLAN) {
@@ -1464,7 +1478,9 @@ absl::StatusOr<QueryResult> QueryEngine::ExecuteSql(
                            type_factory_, context.schema->dialect(),
                            context.schema,
                            GetTimeZone(function_catalog_.GetLatestSchema())));
+        DM_LAP("qe.9_dml_evaluate", dm_t);
         GOOGLESQL_RETURN_IF_ERROR(context.writer->Write(execute_update_result.mutation));
+        DM_LAP("qe.10_dml_writer_write", dm_t);
         result.modified_row_count = execute_update_result.modify_row_count;
         result.rows = std::move(execute_update_result.returning_row_cursor);
       } else {

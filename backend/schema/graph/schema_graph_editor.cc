@@ -15,6 +15,7 @@
 //
 
 #include "backend/schema/graph/schema_graph_editor.h"
+#include "common/phase_timer.h"
 
 #include <algorithm>
 #include <memory>
@@ -144,6 +145,7 @@ bool SchemaGraphEditor::IsOriginalNode(const SchemaNode* node) const {
 absl::StatusOr<std::unique_ptr<SchemaGraph>>
 SchemaGraphEditor::CanonicalizeGraph() {
   std::unique_ptr<SchemaGraph> cloned_graph = nullptr;
+  DM_T0(dm_t);
   if (!deleted_nodes_.empty()) {
     GOOGLESQL_VLOG(2) << "Canonicalizing deletes";
     GOOGLESQL_RETURN_IF_ERROR(CanonicalizeDeletion());
@@ -167,7 +169,9 @@ SchemaGraphEditor::CanonicalizeGraph() {
       new_nodes_.end());
   cloned_graph = std::make_unique<SchemaGraph>(std::move(new_nodes_),
                                                std::move(cloned_pool_));
+  DM_LAP("ddl.canon.1_clone_edits", dm_t);
   context_->MakeNewTempSchemaSnapshot(cloned_graph.get());
+  DM_LAP("ddl.canon.2_temp_schema_snapshot", dm_t);
 
   // Validate the update on cloned nodes which still includes edited and
   // deleted nodes.
@@ -177,6 +181,7 @@ SchemaGraphEditor::CanonicalizeGraph() {
     GOOGLESQL_RETURN_IF_ERROR(clone->ValidateUpdate(orig_node, context_));
   }
 
+  DM_LAP("ddl.canon.3_validate_update_all_nodes", dm_t);
   // Finally, erase deleted nodes from the new graph.
   if (!deleted_nodes_.empty()) {
     trimmed_ = cloned_pool_ptr->Trim();
@@ -187,6 +192,7 @@ SchemaGraphEditor::CanonicalizeGraph() {
   for (const auto* node : cloned_graph->GetSchemaNodes()) {
     GOOGLESQL_RETURN_IF_ERROR(node->Validate(context_));
   }
+  DM_LAP("ddl.canon.4_validate_all_nodes", dm_t);
   context_->ClearNewTempSchemaSnapshot();
 
   // Check the invariants around the nodes.

@@ -15,6 +15,7 @@
 //
 
 #include "backend/locking/manager.h"
+#include "common/phase_timer.h"
 
 #include <functional>
 #include <memory>
@@ -130,13 +131,22 @@ absl::Status LockManager::MarkCommitted(LockHandle* handle) {
 }
 
 void LockManager::WaitForSafeRead(absl::Time read_time) {
+  DM_PHASE("lock.wait_for_safe_read");
+  if (phase_timer::Enabled() && read_time > absl::Now()) {
+    phase_timer::Count("lock.wait_for_safe_read.read_time_in_future", 1);
+  }
   absl::MutexLock lock(mu_);
 
   // Wait for read time to become current if passed a future timestamp  for the
   // case of exact timestamp bound for snapshot read.
   // https://cloud.google.com/spanner/docs/timestamp-bounds#introduction
-  bool f = false;
-  mu_.AwaitWithDeadline(absl::Condition(&f), read_time);
+  // Only while it is in the future: a timed wait on a deadline already passed
+  // still sleeps for the kernel's timer slack, 50 us by default, and a strong
+  // read asks with a timestamp taken microseconds earlier.
+  if (absl::Now() < read_time) {
+    bool f = false;
+    mu_.AwaitWithDeadline(absl::Condition(&f), read_time);
+  }
 
   while (pending_commit_timestamp_ < read_time) {
     pending_commit_cvar_.Wait(&mu_);

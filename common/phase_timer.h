@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <ctime>
+#include <string>
 
 namespace google::spanner::emulator::phase_timer {
 
@@ -11,6 +12,8 @@ namespace google::spanner::emulator::phase_timer {
 // second without any scope finishing. Disabled, a scope costs one predictable branch.
 bool Enabled();
 void Record(const char* name, int64_t nanos);
+// Adds `count` (not a duration) under a name built at run time.
+void Count(const std::string& name, int64_t count);
 
 inline int64_t NowNanos() {
   timespec ts;

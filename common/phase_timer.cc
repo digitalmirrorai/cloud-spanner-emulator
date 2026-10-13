@@ -63,6 +63,14 @@ bool Enabled() {
   return enabled;
 }
 
+void Count(const std::string& name, int64_t count) {
+  absl::MutexLock lock(&mu);
+  Totals& t = (*totals)[name];
+  ++t.count;
+  t.nanos += count * 1000;  // printed as mean_us = mean count
+  last_record_nanos = NowNanos();
+}
+
 void Record(const char* name, int64_t nanos) {
   absl::MutexLock lock(&mu);
   Totals& t = (*totals)[name];

@@ -108,6 +108,7 @@ cc_library(
     srcs = ["query_engine.cc"],
     hdrs = ["query_engine.h"],
     deps = [
+        "//common:phase_timer",
         ":analyzer_options",
         ":ann_functions_rewriter",
         ":ann_validator",

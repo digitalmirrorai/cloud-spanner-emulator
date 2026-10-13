@@ -53,6 +53,7 @@ cc_library(
     srcs = ["schema_graph_editor.cc"],
     hdrs = ["schema_graph_editor.h"],
     deps = [
+        "//common:phase_timer",
         ":schema_graph",
         ":schema_node",
         ":schema_objects_pool",

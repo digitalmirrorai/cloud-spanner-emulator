@@ -28,6 +28,16 @@ package(
 licenses(["notice"])
 
 cc_library(
+    name = "phase_timer",
+    srcs = ["phase_timer.cc"],
+    hdrs = ["phase_timer.h"],
+    deps = [
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+cc_library(
     name = "clock",
     srcs = ["clock.cc"],
     hdrs = ["clock.h"],

@@ -299,6 +299,7 @@ cc_library(
     name = "queries",
     srcs = ["queries.cc"],
     deps = [
+        "//common:phase_timer",
         ":change_streams",
         "//backend/access:read",
         "//backend/query:query_engine",
@@ -491,6 +492,7 @@ cc_library(
     name = "transactions",
     srcs = ["transactions.cc"],
     deps = [
+        "//common:phase_timer",
         "//backend/access:write",
         "//common:errors",
         "//frontend/converters:mutations",

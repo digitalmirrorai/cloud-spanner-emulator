@@ -15,6 +15,8 @@
 //
 
 #include "backend/query/queryable_table.h"
+#include "common/phase_timer.h"
+#include "absl/strings/str_cat.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -210,10 +212,20 @@ class KeyFilteredTableIterator : public googlesql::EvaluatorTableIterator {
       key_set.AddRange(KeyRange::Prefix(prefix));
     }
     read_arg_.key_set = key_set;
+    narrowed_ = true;
     return absl::OkStatus();
   }
 
+  ~KeyFilteredTableIterator() override {
+    if (phase_timer::Enabled()) {
+      phase_timer::Count(absl::StrCat("rows.", read_arg_.table,
+                                      narrowed_ ? ".keyed" : ".FULL"),
+                         rows_read_);
+    }
+  }
+
   bool NextRow() override {
+    if (phase_timer::Enabled()) ++rows_read_;
     if (rows_ == nullptr) {
       std::unique_ptr<RowCursor> cursor;
       read_status_ = reader_->Read(read_arg_, &cursor);
@@ -251,6 +263,8 @@ class KeyFilteredTableIterator : public googlesql::EvaluatorTableIterator {
   std::unique_ptr<RowCursorEvaluatorTableIterator> rows_;
 
   absl::Status read_status_;
+  bool narrowed_ = false;
+  int64_t rows_read_ = 0;
 };
 
 
@@ -400,6 +414,11 @@ QueryableTable::CreateEvaluatorTableIterator(
     }
   }
   if (leading_key_positions.empty()) {
+    if (phase_timer::Enabled()) {
+      phase_timer::Count(
+          absl::StrCat("rows.", read_arg.table, ".FULL_NO_KEY_COLUMNS_opened"),
+          1);
+    }
     std::unique_ptr<RowCursor> cursor;
     GOOGLESQL_RETURN_IF_ERROR(reader_->Read(read_arg, &cursor));
     return std::make_unique<RowCursorEvaluatorTableIterator>(

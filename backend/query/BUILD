@@ -756,6 +756,7 @@ cc_library(
         "queryable_table.h",
     ],
     deps = [
+        "//common:phase_timer",
         ":column_expression_analysis_cache",
         ":queryable_column",
         "//backend/access:read",

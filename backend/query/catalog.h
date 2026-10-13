@@ -177,8 +177,28 @@ class Catalog : public googlesql::EnumerableCatalog {
   // The backend schema (which is the default schema in this catalog).
   const Schema* schema_ = nullptr;
 
-  // Tables available in the default schema.
-  CaseInsensitiveStringMap<std::unique_ptr<const QueryableTable>> tables_;
+  // Wraps the table `name` of the default schema on its first lookup, or
+  // returns nullptr when the schema has no such table.
+  const QueryableTable* FindOrWrapTable(const std::string& name) const;
+
+  // Wraps every table not yet wrapped and fills `types_`, for the callers that
+  // enumerate the catalog rather than look a name up.
+  void WrapAllTables() const;
+
+  // Tables available in the default schema, wrapped on first use: wrapping
+  // builds a column per schema column, and a statement names a few tables of
+  // hundreds.
+  mutable CaseInsensitiveStringMap<std::unique_ptr<const QueryableTable>>
+      tables_;
+  struct UnwrappedTable {
+    const Table* table;
+    bool is_synonym;
+  };
+  mutable CaseInsensitiveStringMap<UnwrappedTable> unwrapped_tables_;
+  mutable bool all_tables_wrapped_ = false;
+  RowReader* reader_ = nullptr;
+  std::optional<const googlesql::AnalyzerOptions> table_options_;
+  ColumnExpressionAnalysisCache* column_analyses_ = nullptr;
   CaseInsensitiveStringMap<std::unique_ptr<const QueryableView>> views_;
   CaseInsensitiveStringMap<std::unique_ptr<const QueryableModel>> models_;
 
@@ -187,8 +207,8 @@ class Catalog : public googlesql::EnumerableCatalog {
       property_graphs_;
   CaseInsensitiveStringMap<const PropertyGraph*> unwrapped_property_graphs_;
 
-  // Types available in the default schema.
-  CaseInsensitiveStringMap<const googlesql::Type*> types_;
+  // Types of the columns of the tables, filled by WrapAllTables.
+  mutable CaseInsensitiveStringMap<const googlesql::Type*> types_;
 
   // Change Stream TVFs available in the default schema.
   CaseInsensitiveStringMap<

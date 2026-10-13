@@ -15,6 +15,7 @@
 //
 
 #include "backend/query/catalog.h"
+#include "common/phase_timer.h"
 
 #include <memory>
 #include <optional>
@@ -213,6 +214,7 @@ Catalog::Catalog(
       function_catalog_(function_catalog),
       type_factory_(type_factory),
       secure_context_(secure_context) {
+  DM_T0(dm_t);
   // SECURE_CONTEXT is query-specific because it accesses query-level
   // secure parameters. We construct it here using the query-specific
   // secure_context_ map and store it in the Catalog. We do not register
@@ -261,18 +263,29 @@ Catalog::Catalog(
     }
   }
 
+  DM_LAP("catalog.1_named_schemas_udfs_sequences", dm_t);
   // Pass the reader to tables. One optional for all of them: the analyzer
   // options are a deep copy each time they are passed by value, and a copy
   // per table and per column was most of what a statement paid before it
   // read a row.
-  const std::optional<const googlesql::AnalyzerOptions> table_options(
-      options);
-  ColumnExpressionAnalysisCache* analyses =
-      function_catalog == nullptr
-          ? nullptr
-          : function_catalog->column_expression_analyses();
+  reader_ = reader;
+  table_options_.emplace(options);
+  column_analyses_ = function_catalog == nullptr
+                         ? nullptr
+                         : function_catalog->column_expression_analyses();
+  const std::optional<const googlesql::AnalyzerOptions>& table_options =
+      table_options_;
+  ColumnExpressionAnalysisCache* analyses = column_analyses_;
+  DM_LAP("catalog.2_copy_options", dm_t);
   for (const auto* table : schema->tables()) {
     std::string name = table->Name();
+    if (!SDLObjectName::IsFullyQualifiedName(name)) {
+      unwrapped_tables_[name] = {table, /*is_synonym=*/false};
+      if (!table->synonym().empty() &&
+          !SDLObjectName::IsFullyQualifiedName(table->synonym())) {
+        unwrapped_tables_[table->synonym()] = {table, /*is_synonym=*/true};
+      }
+    }
     if (SDLObjectName::IsFullyQualifiedName(name)) {
       absl::Status status = AddObjectToNamedSchema(
           std::string(SDLObjectName::GetSchemaName(name)),
@@ -280,10 +293,6 @@ Catalog::Catalog(
                                            type_factory, /*is_synonym=*/false, /*is_pg=*/false,
                                            analyses));
       LOG_IF(ERROR, !status.ok()) << status.message();
-    } else {
-      tables_[table->Name()] = std::make_unique<QueryableTable>(
-          table, reader, table_options, this, type_factory,
-          /*is_synonym=*/false, /*is_pg=*/false, analyses);
     }
 
     std::string synonym_name = table->synonym();
@@ -295,13 +304,10 @@ Catalog::Catalog(
                                              this, type_factory,
                                              /*is_synonym=*/true, /*is_pg=*/false, analyses));
         LOG_IF(ERROR, !status.ok()) << status.message();
-      } else {
-        tables_[synonym_name] = std::make_unique<QueryableTable>(
-            table, reader, table_options, this, type_factory,
-            /*is_synonym=*/true, /*is_pg=*/false, analyses);
       }
     }
   }
+  DM_LAP("catalog.3_tables", dm_t);
 
   for (const auto* queue : schema->queues()) {
     if (queue->backing_table() != nullptr) {
@@ -433,7 +439,51 @@ Catalog::Catalog(
     }
   }
 
-  // Read types.
+  DM_LAP("catalog.4_views_graphs_tvfs", dm_t);
+
+  if (absl::Status status = PopulateSystemProcedureMap(); !status.ok()) {
+    // Not an error that requires us to exit the emulator.
+    ABSL_LOG(ERROR) << "Failed to populate system procedure map: ";
+  }
+  DM_LAP("catalog.5_procedures", dm_t);
+}
+
+const QueryableTable* Catalog::FindOrWrapTable(const std::string& name) const {
+  if (auto it = tables_.find(name); it != tables_.end()) {
+    return it->second.get();
+  }
+  auto unwrapped = unwrapped_tables_.find(name);
+  if (unwrapped == unwrapped_tables_.end()) {
+    return nullptr;
+  }
+  UnwrappedTable entry = unwrapped->second;
+  unwrapped_tables_.erase(unwrapped);
+  // The key of `tables_` is the name the schema gives, not the spelling looked
+  // up, as when every table was wrapped up front.
+  const std::string key =
+      entry.is_synonym ? entry.table->synonym() : entry.table->Name();
+  auto wrapped = std::make_unique<QueryableTable>(
+      entry.table, reader_, table_options_, const_cast<Catalog*>(this),
+      type_factory_, entry.is_synonym, /*is_pg=*/false,
+      column_analyses_);
+  const QueryableTable* result = wrapped.get();
+  tables_[key] = std::move(wrapped);
+  return result;
+}
+
+void Catalog::WrapAllTables() const {
+  if (all_tables_wrapped_) {
+    return;
+  }
+  all_tables_wrapped_ = true;
+  std::vector<std::string> names;
+  names.reserve(unwrapped_tables_.size());
+  for (const auto& [name, unused] : unwrapped_tables_) {
+    names.push_back(name);
+  }
+  for (const std::string& name : names) {
+    FindOrWrapTable(name);
+  }
   for (const auto& tablepair : tables_) {
     const QueryableTable* table = tablepair.second.get();
     for (int i = 0; i < table->NumColumns(); ++i) {
@@ -441,11 +491,6 @@ Catalog::Catalog(
           googlesql::PRODUCT_EXTERNAL, /*use_external_float32=*/true);
       types_[type_name] = table->GetColumn(i)->GetType();
     }
-  }
-
-  if (absl::Status status = PopulateSystemProcedureMap(); !status.ok()) {
-    // Not an error that requires us to exit the emulator.
-    ABSL_LOG(ERROR) << "Failed to populate system procedure map: ";
   }
 }
 
@@ -503,8 +548,8 @@ absl::Status Catalog::GetTable(const std::string& name,
     return absl::OkStatus();
   }
 
-  if (auto it = tables_.find(name); it != tables_.end()) {
-    *table = it->second.get();
+  if (const QueryableTable* found = FindOrWrapTable(name); found != nullptr) {
+    *table = found;
     return absl::OkStatus();
   }
 
@@ -625,6 +670,7 @@ absl::Status Catalog::GetCatalogs(
 
 absl::Status Catalog::GetTables(
     absl::flat_hash_set<const googlesql::Table*>* output) const {
+  WrapAllTables();
   for (auto iter = tables_.begin(); iter != tables_.end(); ++iter) {
     output->insert(iter->second.get());
   }
@@ -636,6 +682,7 @@ absl::Status Catalog::GetTables(
 
 absl::Status Catalog::GetTypes(
     absl::flat_hash_set<const googlesql::Type*>* output) const {
+  WrapAllTables();
   for (const auto& [unused_name, type] : types_) {
     output->insert(type);
   }
@@ -646,6 +693,7 @@ absl::Status Catalog::GetType(const std::string& name,
                               const googlesql::Type** type,
                               const FindOptions& options) {
   *type = nullptr;
+  WrapAllTables();
   if (auto it = types_.find(name); it != types_.end()) {
     *type = it->second;
     return absl::OkStatus();

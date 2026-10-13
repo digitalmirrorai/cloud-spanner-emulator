@@ -187,14 +187,10 @@ class Catalog : public googlesql::EnumerableCatalog {
 
   // Tables available in the default schema, wrapped on first use: wrapping
   // builds a column per schema column, and a statement names a few tables of
-  // hundreds.
+  // hundreds. Looked up in the schema, so a statement pays nothing for the
+  // tables it does not name.
   mutable CaseInsensitiveStringMap<std::unique_ptr<const QueryableTable>>
       tables_;
-  struct UnwrappedTable {
-    const Table* table;
-    bool is_synonym;
-  };
-  mutable CaseInsensitiveStringMap<UnwrappedTable> unwrapped_tables_;
   mutable bool all_tables_wrapped_ = false;
   RowReader* reader_ = nullptr;
   std::optional<const googlesql::AnalyzerOptions> table_options_;

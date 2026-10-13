@@ -532,3 +532,69 @@ index 6d59d274..cc8d1398 100644
  
    static std::vector<Value> ToValues(absl::Span<const ValueConstructor> slice) {
      std::vector<Value> values;
+diff --git a/googlesql/reference_impl/algebrizer.cc b/googlesql/reference_impl/algebrizer.cc
+--- a/googlesql/reference_impl/algebrizer.cc
++++ b/googlesql/reference_impl/algebrizer.cc
+@@ -7509,6 +7509,37 @@
+   // that could be generalized, but it seems reasonable to create all columns
+   // before resolving any expressions.
+ 
++  // Algebrizes the scan of the table a DELETE or UPDATE modifies, offering it
++  // the equality and IN conjuncts of the WHERE clause so that the table can
++  // narrow what it reads. They are marked redundant: the DML expression
++  // evaluates the whole WHERE clause on every row the scan returns, so the scan
++  // may return more rows than match but never fewer.
++  auto populate_target_scan_map =
++      [&](const ResolvedTableScan* scan,
++          const ResolvedExpr* where_expr) -> absl::Status {
++    std::vector<std::unique_ptr<FilterConjunctInfo>> conjunct_infos;
++    std::vector<FilterConjunctInfo*> active_conjuncts;
++    if (where_expr != nullptr && algebrizer_options_.push_down_filters) {
++      GOOGLESQL_RETURN_IF_ERROR(AddFilterConjunctsTo(where_expr, &conjunct_infos));
++      for (const std::unique_ptr<FilterConjunctInfo>& info : conjunct_infos) {
++        std::vector<const ResolvedNode*> subqueries;
++        info->conjunct->GetDescendantsWithKinds({RESOLVED_SUBQUERY_EXPR},
++                                                &subqueries);
++        if ((info->kind == FilterConjunctInfo::kEquals ||
++             info->kind == FilterConjunctInfo::kInArray) &&
++            info->is_non_volatile && subqueries.empty()) {
++          info->redundant = true;
++          active_conjuncts.push_back(info.get());
++        }
++      }
++    }
++    GOOGLESQL_ASSIGN_OR_RETURN(std::unique_ptr<RelationalOp> relational_op,
++                     AlgebrizeScan(scan, &active_conjuncts));
++    GOOGLESQL_RET_CHECK(
++        resolved_scan_map->emplace(scan, std::move(relational_op)).second);
++    return absl::OkStatus();
++  };
++
+   // TODO: Add MERGE support.
+   const ResolvedTableScan* resolved_table_scan_or_null = nullptr;
+   switch (ast_root->node_kind()) {
+@@ -7517,8 +7548,8 @@
+ 
+       resolved_table_scan_or_null = stmt->table_scan();
+       if (resolved_table_scan_or_null != nullptr) {
+-        GOOGLESQL_RETURN_IF_ERROR(PopulateResolvedScanMap(resolved_table_scan_or_null,
+-                                                resolved_scan_map));
++        GOOGLESQL_RETURN_IF_ERROR(populate_target_scan_map(resolved_table_scan_or_null,
++                                                 stmt->where_expr()));
+       }
+ 
+       if (stmt->array_offset_column() != nullptr) {
+@@ -7544,8 +7575,11 @@
+ 
+       resolved_table_scan_or_null = stmt->table_scan();
+       if (resolved_table_scan_or_null != nullptr) {
+-        GOOGLESQL_RETURN_IF_ERROR(PopulateResolvedScanMap(resolved_table_scan_or_null,
+-                                                resolved_scan_map));
++        // A FROM clause's columns are not yet known to the algebrizer, so its
++        // conjuncts cannot be offered to the target table.
++        GOOGLESQL_RETURN_IF_ERROR(populate_target_scan_map(
++            resolved_table_scan_or_null,
++            stmt->from_scan() == nullptr ? stmt->where_expr() : nullptr));
+         GOOGLESQL_RETURN_IF_ERROR(AlgebrizeDefaultAndGeneratedExpressions(
+             resolved_table_scan_or_null, column_expr_map,
+             stmt->generated_column_expr_list(),

@@ -393,13 +393,12 @@ const QueryableTable* Catalog::FindOrWrapTable(const std::string& name) const {
   if (auto it = tables_.find(name); it != tables_.end()) {
     return it->second.get();
   }
-  // Tables of a named schema are reached through that schema's catalog.
-  bool is_synonym = false;
+  // Schema::FindTable falls back to synonyms, so a table whose own name is not
+  // `name` was found by its synonym. Tables of a named schema are reached
+  // through that schema's catalog.
   const Table* table = schema_->FindTable(name);
-  if (table == nullptr) {
-    table = schema_->FindTableUsingSynonym(name);
-    is_synonym = table != nullptr;
-  }
+  const bool is_synonym =
+      table != nullptr && !absl::EqualsIgnoreCase(table->Name(), name);
   if (table == nullptr ||
       SDLObjectName::IsFullyQualifiedName(is_synonym ? table->synonym()
                                                      : table->Name())) {

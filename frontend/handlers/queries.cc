@@ -564,6 +564,7 @@ absl::Status ExecuteStreamingSql(
           GOOGLESQL_RETURN_IF_ERROR(ValidateReadTimestampNotTooFarInFuture(
               read_timestamp, ctx->env()->clock()->Now()));
         }
+        DM_LAP("ess.4a_validate_read_timestamp", dm_t);
         // Convert and execute provided SQL statement.
         GOOGLESQL_ASSIGN_OR_RETURN(
             backend::Query query,
@@ -573,7 +574,7 @@ absl::Status ExecuteStreamingSql(
                 txn->schema()->proto_bundle(),
                 request->request_options().client_context().secure_context()));
         query.queue_receive_metadata = &queue_receive_state.metadata;
-        DM_LAP("ess.4_validate_and_query_from_proto", dm_t);
+        DM_LAP("ess.4b_query_from_proto", dm_t);
         bool in_read_write_txn = txn->IsReadWrite() || txn->IsPartitionedDml();
         GOOGLESQL_ASSIGN_OR_RETURN(change_stream_metadata,
                          backend::QueryEngine::TryGetChangeStreamMetadata(

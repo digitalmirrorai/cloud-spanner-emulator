@@ -36,6 +36,7 @@ cc_library(
         "request.h",
     ],
     deps = [
+        "//common:phase_timer",
         "//backend/common:ids",
         "//backend/datamodel:key_range",
         "//common:clock",

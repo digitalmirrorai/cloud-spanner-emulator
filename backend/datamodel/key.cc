@@ -31,6 +31,33 @@ namespace backend {
 
 namespace {
 
+// Orders two non-null values of a key column: negative, zero or positive. The
+// common key types are compared once, in the order GoogleSQL gives them
+// (strings and bytes byte by byte); others by LessThan and then Equals.
+int CompareKeyValues(const googlesql::Value& a, const googlesql::Value& b) {
+  if (a.type_kind() == b.type_kind()) {
+    switch (a.type_kind()) {
+      case googlesql::TYPE_STRING:
+        return a.string_value().compare(b.string_value());
+      case googlesql::TYPE_BYTES:
+        return a.bytes_value().compare(b.bytes_value());
+      case googlesql::TYPE_INT64:
+        return a.int64_value() < b.int64_value()
+                   ? -1
+                   : (a.int64_value() > b.int64_value() ? 1 : 0);
+      case googlesql::TYPE_BOOL:
+        return static_cast<int>(a.bool_value()) -
+               static_cast<int>(b.bool_value());
+      default:
+        break;
+    }
+  }
+  if (a.LessThan(b)) {
+    return -1;
+  }
+  return a.Equals(b) ? 0 : 1;
+}
+
 // Returns the logical size in bytes of the given value.
 int64_t LogicalBytesInternal(const googlesql::Value& value) {
   if (value.is_null()) {
@@ -115,15 +142,11 @@ int Key::Compare(const Key& other) const {
     if (other.columns_[i].is_null()) {
       return is_nulls_last_[i] ? -1 : 1;
     }
-    if (columns_[i].LessThan(other.columns_[i])) {
-      return is_descending_[i] ? 1 : -1;
-    }
-
-    if (columns_[i].Equals(other.columns_[i])) {
+    const int order = CompareKeyValues(columns_[i], other.columns_[i]);
+    if (order == 0) {
       continue;
     }
-
-    return is_descending_[i] ? -1 : 1;
+    return (order < 0) != is_descending_[i] ? -1 : 1;
   }
 
   // If we reached here, *this is a prefix of other.

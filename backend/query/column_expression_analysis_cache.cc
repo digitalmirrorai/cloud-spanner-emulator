@@ -24,6 +24,7 @@
 
 #include "googlesql/public/function.h"
 #include "googlesql/resolved_ast/resolved_ast.h"
+#include "googlesql/resolved_ast/resolved_ast_visitor.h"
 #include "googlesql/resolved_ast/resolved_node_kind.pb.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
@@ -40,6 +41,37 @@ namespace {
 // queryable_udf.h, which this target cannot depend on without a cycle through
 // index_hint_validator).
 constexpr absl::string_view kSqlUdfFunctionGroup = "SQL_UDF";
+
+// Finds, at any depth, a node that ties an analysis to the catalog it was made
+// with: a sequence, a subquery or a call of a SQL UDF. A sequence is most often
+// an argument of a function call, as in GET_NEXT_SEQUENCE_VALUE(SEQUENCE s) of
+// an identity column, so the search must not stop at function calls.
+class UnshareableNodeFinder : public googlesql::ResolvedASTVisitor {
+ public:
+  bool found() const { return found_; }
+
+ private:
+  absl::Status VisitResolvedSequence(
+      const googlesql::ResolvedSequence* node) override {
+    found_ = true;
+    return absl::OkStatus();
+  }
+  absl::Status VisitResolvedSubqueryExpr(
+      const googlesql::ResolvedSubqueryExpr* node) override {
+    found_ = true;
+    return absl::OkStatus();
+  }
+  absl::Status VisitResolvedFunctionCall(
+      const googlesql::ResolvedFunctionCall* node) override {
+    if (node->function()->GetGroup() == kSqlUdfFunctionGroup) {
+      found_ = true;
+      return absl::OkStatus();
+    }
+    return DefaultVisit(node);
+  }
+
+  bool found_ = false;
+};
 
 }  // namespace
 
@@ -76,21 +108,11 @@ void ColumnExpressionAnalysisCache::Store(
 
 bool ColumnExpressionAnalysisCache::IsShareable(
     const googlesql::AnalyzerOutput& output) {
-  std::vector<const googlesql::ResolvedNode*> nodes;
-  output.resolved_expr()->GetDescendantsWithKinds(
-      {googlesql::RESOLVED_FUNCTION_CALL, googlesql::RESOLVED_SEQUENCE,
-       googlesql::RESOLVED_SUBQUERY_EXPR},
-      &nodes);
-  for (const googlesql::ResolvedNode* node : nodes) {
-    if (node->node_kind() != googlesql::RESOLVED_FUNCTION_CALL) {
-      return false;
-    }
-    const auto* call = node->GetAs<googlesql::ResolvedFunctionCall>();
-    if (call->function()->GetGroup() == kSqlUdfFunctionGroup) {
-      return false;
-    }
+  UnshareableNodeFinder finder;
+  if (!output.resolved_expr()->Accept(&finder).ok()) {
+    return false;
   }
-  return true;
+  return !finder.found();
 }
 
 }  // namespace backend

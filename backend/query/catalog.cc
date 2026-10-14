@@ -413,9 +413,11 @@ const QueryableTable* Catalog::FindOrWrapTable(const std::string& name) const {
   auto wrapped = std::make_unique<QueryableTable>(
       table, reader_, table_options_, const_cast<Catalog*>(this),
       type_factory_, is_synonym, column_analyses_);
-  const QueryableTable* result = wrapped.get();
-  tables_[key] = std::move(wrapped);
-  return result;
+  // Wrapping analyzes the table's default and generated column expressions
+  // against this catalog, which may look the same table up and wrap it first.
+  // That wrapper is the one analysis already points at, so it is kept.
+  auto [it, inserted] = tables_.try_emplace(key, std::move(wrapped));
+  return it->second.get();
 }
 
 void Catalog::WrapAllTables() const {

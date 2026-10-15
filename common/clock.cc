@@ -17,6 +17,8 @@
 #include "common/clock.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <string>
 
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
@@ -32,7 +34,29 @@ absl::Time NowMicros() {
   return absl::FromUnixMicros(absl::ToUnixMicros(absl::Now()));
 }
 
+// No allowance unless one is asked for: upstream's exact comparison is what a
+// client sharing this process's host should see, and a deployment whose client
+// sits on another clock -- a macOS host against its Docker VM -- is the one
+// that knows how far apart the two run.
+constexpr absl::Duration kDefaultMaxClientClockSkew = absl::ZeroDuration();
+
 }  // namespace
+
+absl::Duration MaxClientClockSkewFromEnvValue(const char* value) {
+  if (value == nullptr || *value == '\0') return kDefaultMaxClientClockSkew;
+  char* end = nullptr;
+  const long long ms = std::strtoll(value, &end, 10);
+  // A value that is not a non-negative whole number says nothing about what
+  // was intended, so allow nothing rather than guess at it.
+  if (end == value || *end != '\0' || ms < 0) return kDefaultMaxClientClockSkew;
+  return absl::Milliseconds(ms);
+}
+
+absl::Duration MaxClientClockSkew() {
+  static const absl::Duration skew = MaxClientClockSkewFromEnvValue(
+      std::getenv("SPANNER_EMULATOR_MAX_CLIENT_CLOCK_SKEW_MS"));
+  return skew;
+}
 
 Clock::Clock()
     : last_system_time_(NowMicros()), last_dispensed_time_(last_system_time_) {}

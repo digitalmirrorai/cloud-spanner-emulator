@@ -10,6 +10,20 @@ waits the whole lead. A container that has served a day's requests answers a key
 milliseconds instead of one. Upstream accepted this change in issue #277 in October 2025 and has not
 released it.
 
+**A client's clock may be allowed to sit a little ahead of this one** (`common/clock.cc`,
+`backend/actions/column_value.cc`, `backend/transaction/commit_timestamp.cc`). A commit timestamp
+the client supplies is compared against this process's clock, which is the client's clock only when
+both share a host. Under Docker Desktop on macOS or Windows the client is on the host and the
+emulator is in a VM whose clock drifts behind it, so a timestamp taken moments ago arrives here in
+the future and the write is refused with `FAILED_PRECONDITION: Cannot write timestamps in the
+future`. Measured on an idle Mac the host ran 1.2-3.9 ms ahead; a loaded one is worse. Reads already
+tolerate an hour of this (`kMaxFutureReadDuration`, `frontend/handlers/reads.cc`); writes tolerate
+nothing, so a `cup/api` suite shed a few hundred tests to it. Set
+`SPANNER_EMULATOR_MAX_CLIENT_CLOCK_SKEW_MS` to the number of milliseconds a client may run ahead and
+both write checks allow that much; unset, or set to `0`, the comparison is exactly upstream's. The
+clock itself is untouched: timestamps this emulator assigns stay on system time, so nothing it
+stores is ever dated ahead of the client's own clock.
+
 **A query reads only the keys its filters allow** (`backend/query/queryable_table.cc`). Upstream
 reads every row of every table a query names and lets the evaluator filter. The evaluator offers its
 equality and `IN` filters before the first row; this branch turns those on the leading primary key

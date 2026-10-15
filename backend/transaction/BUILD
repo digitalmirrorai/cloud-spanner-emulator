@@ -407,6 +407,7 @@ cc_library(
         "//backend/datamodel:value",
         "//backend/schema/catalog:schema",
         "//backend/storage:in_memory_iterator",
+        "//common:clock",
         "//common:constants",
         "//common:errors",
         "@com_google_absl//absl/base:core_headers",

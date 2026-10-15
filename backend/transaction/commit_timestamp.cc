@@ -30,6 +30,7 @@
 #include "backend/datamodel/value.h"
 #include "backend/schema/catalog/column.h"
 #include "backend/schema/catalog/table.h"
+#include "common/clock.h"
 #include "common/constants.h"
 #include "common/errors.h"
 
@@ -137,7 +138,10 @@ absl::StatusOr<Key> MaybeSetCommitTimestampSentinel(
 
 absl::Status ValidateCommitTimestampValueNotInFuture(
     const googlesql::Value& value, absl::Time now) {
-  if (!value.is_null() && value.type()->IsTimestamp() && value.ToTime() > now) {
+  // The allowance absorbs the difference between the client's clock and this
+  // process's; see MaxClientClockSkew.
+  if (!value.is_null() && value.type()->IsTimestamp() &&
+      value.ToTime() > now + MaxClientClockSkew()) {
     return error::CommitTimestampInFuture(value.ToTime());
   }
   return absl::OkStatus();

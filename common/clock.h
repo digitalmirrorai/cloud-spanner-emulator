@@ -24,6 +24,30 @@ namespace google {
 namespace spanner {
 namespace emulator {
 
+// The amount by which a timestamp supplied by a client may sit ahead of this
+// process's clock and still be accepted where a commit timestamp is validated.
+// Zero unless SPANNER_EMULATOR_MAX_CLIENT_CLOCK_SKEW_MS asks for an allowance,
+// so by default the comparison stays exactly upstream's.
+//
+// The emulator compares a client-supplied commit timestamp against its own
+// clock. Those are the same clock only when the client shares this process's
+// host: under Docker Desktop on macOS or Windows the client is on the host and
+// the emulator is in a VM whose clock drifts behind it, so a timestamp the
+// client took moments ago arrives in this process's future and is refused for
+// no fault of the caller. Such a deployment sets the variable to the number of
+// milliseconds its two clocks run apart. Reads already tolerate an hour of this
+// (kMaxFutureReadDuration in frontend/handlers); writes tolerate nothing.
+//
+// Read once, on first use.
+absl::Duration MaxClientClockSkew();
+
+// MaxClientClockSkew's parsing, separated so it can be tested: the value above
+// is read once per process and a test cannot put the variable back. `value` is
+// the variable's contents, or nullptr when it is unset. Anything that is not a
+// non-negative whole number of milliseconds allows nothing, as an unset
+// variable does.
+absl::Duration MaxClientClockSkewFromEnvValue(const char* value);
+
 // Clock implements a strictly monotonic clock.
 //
 // This class provides two properties that are useful for the emulator:

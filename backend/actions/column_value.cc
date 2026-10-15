@@ -161,9 +161,11 @@ absl::Status ColumnValueValidator::ValidateColumnTimestampValue(
     Clock* clock) const {
   // Check that user provided timestamp value is not in future. Sentinel max
   // timestamp value for commit timestamp column can only be set internally.
+  // The allowance absorbs the difference between the client's clock and this
+  // process's; see MaxClientClockSkew.
   if (column->allows_commit_timestamp() && !value.is_null() &&
       value.ToTime() != kCommitTimestampValueSentinel &&
-      value.ToTime() > clock->Now()) {
+      value.ToTime() > clock->Now() + MaxClientClockSkew()) {
     return error::CommitTimestampInFuture(value.ToTime());
   }
   return absl::OkStatus();

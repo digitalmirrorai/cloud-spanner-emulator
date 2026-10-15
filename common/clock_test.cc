@@ -56,6 +56,26 @@ TEST(Clock, ClockReturnsToTheSystemClockAfterABurst) {
   EXPECT_LE(clock_now, sys_now);
 }
 
+TEST(MaxClientClockSkew, AllowsNothingWhenTheVariableIsUnsetOrEmpty) {
+  EXPECT_EQ(MaxClientClockSkewFromEnvValue(nullptr), absl::ZeroDuration());
+  EXPECT_EQ(MaxClientClockSkewFromEnvValue(""), absl::ZeroDuration());
+}
+
+TEST(MaxClientClockSkew, ReadsAWholeNumberOfMilliseconds) {
+  EXPECT_EQ(MaxClientClockSkewFromEnvValue("250"), absl::Milliseconds(250));
+}
+
+TEST(MaxClientClockSkew, ZeroKeepsTheExactComparison) {
+  EXPECT_EQ(MaxClientClockSkewFromEnvValue("0"), absl::ZeroDuration());
+}
+
+TEST(MaxClientClockSkew, AllowsNothingRatherThanGuessAtAValueItCannotRead) {
+  EXPECT_EQ(MaxClientClockSkewFromEnvValue("soon"), absl::ZeroDuration());
+  EXPECT_EQ(MaxClientClockSkewFromEnvValue("250ms"), absl::ZeroDuration());
+  EXPECT_EQ(MaxClientClockSkewFromEnvValue("-250"), absl::ZeroDuration());
+  EXPECT_EQ(MaxClientClockSkewFromEnvValue("2.5"), absl::ZeroDuration());
+}
+
 }  // namespace
 
 }  // namespace frontend

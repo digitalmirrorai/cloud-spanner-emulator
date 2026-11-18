@@ -109,6 +109,19 @@ deleting 20,000 rows of seven columns in one database: 861 MB resident before, 2
 variable at 5 s, flat from the third cycle on. Without it nothing is collected within the hour, as
 before.
 
+**A row is a sorted array of numbered columns** (`backend/storage/in_memory_storage.*`). Upstream
+held each row as a hash map from column ID string to a `std::map` of versions: a hash table sized
+for growth, a copy of every column ID, and a tree node per version, about 80 bytes of table slot and
+64 of node for each cell before its value. A row is now the versions of its existence and a vector of
+columns sorted by a number the storage gives each column ID the first time it sees it, each column's
+versions in an inlined vector that holds the usual single version without an allocation: 48 bytes a
+cell. A delete adds a version to the row's existence only, not a marker to every cell; a read sees a
+cell's version only if it is no older than the row's last creation, which reads exactly as the
+markers did (a value written earlier in the commit that deletes the row is dropped with it). A read
+looks up each column's number once per call, not once per row. Writing 20,000 rows of seven columns
+(600 bytes of strings each) added 70 MB of resident memory before and 38 MB now, 3.5 KB a row to
+1.9 KB.
+
 **Phase timers** (`common/phase_timer.*`): with `SPANNER_EMULATOR_PHASE_TIMERS=1` on the container,
 the server prints per-phase wall time and per-table rows read to stderr after each quiet second.
 Off, each timer is one branch.

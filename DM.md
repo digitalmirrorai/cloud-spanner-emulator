@@ -14,6 +14,20 @@ equality and `IN` conjuncts of the `WHERE` clause reach that scan as redundant f
 statement still evaluates its whole `WHERE` on every row it gets. A keyed `UPDATE` on a 4,000-row
 table: 19 ms to 1.5 ms.
 
+**A WITH entry used inside a subquery is evaluated once** (`build/bazel/googlesql.patch`, in the
+algebrizer). GoogleSQL's evaluator inlines a WITH entry referenced exactly once at its use site, and
+a subquery expression is evaluated again for every row of the query around it, so an entry
+referenced from `IN (SELECT … FROM entry)` was evaluated once per outer row — and in a chain of such
+entries, each referenced from the subquery of the next, the innermost once per row of every level
+above it: four levels over 60 contracts read `ContractFact` 216,000 times, 212 s. A reference from
+inside a subquery expression now counts as two, so the entry takes the path an entry referenced
+twice always took: evaluated once at the start of the statement, read from an array after that. A
+WITH clause written inside a subquery inlines none of its entries. An entry referenced once from a
+`FROM` clause is still inlined. Since every non-inlined entry is evaluated before the first row, an
+entry now evaluated once runs even where its subquery would never have been reached, as upstream's
+own default (no inlining at all) does: an error in it, such as a division by zero, is raised. That
+query over 45 contracts: 63 s to 20 ms; over 60, 212 s to 17 ms and 13 reads of `ContractFact`.
+
 **A statement no longer pays for the schema** (`backend/query/catalog.cc`,
 `backend/query/queryable_table.cc`, `backend/query/column_expression_analysis_cache.*`,
 `backend/query/queryable_property_graph.cc`). Upstream builds a catalog for every statement and,

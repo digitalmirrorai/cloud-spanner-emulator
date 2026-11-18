@@ -32,7 +32,9 @@ cc_library(
         "database.h",
     ],
     deps = [
+        ":schema_cache",
         "//common:phase_timer",
+        "@com_google_absl//absl/log",
         "//backend/actions:manager",
         "//backend/common:ids",
         "//backend/database/change_stream:change_stream_partition_churner",
@@ -64,6 +66,25 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "schema_cache",
+    srcs = [
+        "schema_cache.cc",
+    ],
+    hdrs = [
+        "schema_cache.h",
+    ],
+    deps = [
+        "//backend/schema/catalog:schema",
+        "//backend/schema/updater:schema_updater",
+        "//common:feature_flags",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_googlesql//googlesql/public:type",
+    ],
+)
+
 cc_test(
     name = "database_test",
     srcs = [
@@ -71,17 +92,22 @@ cc_test(
     ],
     deps = [
         ":database",
+        ":schema_cache",
         "//backend/access:read",
         "//backend/datamodel:key_set",
+        "//backend/query:query_engine",
         "//backend/schema/updater:schema_updater",
         "//backend/transaction:read_only_transaction",
         "//common:clock",
         "//common:config",
         "//common:errors",
+        "//common:feature_flags",
         "//tests/common:proto_matchers",
+        "//tests/common:scoped_feature_flags_setter",
         "@com_github_google_benchmark//:benchmark",
         "@com_github_grpc_grpc//:grpc++",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
         "@com_google_googlesql//googlesql/base/testing:status_matchers",
         "@com_google_googletest//:gtest_main",
     ],

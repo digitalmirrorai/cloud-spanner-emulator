@@ -49,10 +49,25 @@ strings, bytes, integers and booleans instead of `LessThan` and then `Equals`: a
 **A modifying or graph statement is analyzed once** (`backend/query/query_engine.cc`): both need an
 analysis that keeps every column, which is known from the statement text before the first pass.
 
+**A database created from statements already built copies their schema**
+(`backend/database/schema_cache.*`, `backend/database/database.cc`). A test run starts several JVMs
+that each create a database from the same statements on one emulator, at the same moment, and every
+create applied all of them: each statement clones and validates the whole schema graph, 2.3 s of CPU
+for 506 statements. Now the first create builds and publishes a copy of its schema; a create that
+arrives meanwhile waits for it, and each later one clones the published graph once, into nodes of
+its own, and moves its table and column ID generators to where the build left them. The second
+database of that schema: 2.3 s to 10 ms; three at once: 9 s of CPU to 2.3 s. The copies share only
+their column types, so the builder's type factory lives as long as the cache or a database that
+copied holds it. A schema is published only if its build left nothing of the one database: no
+sequence (an identity column makes one), change stream or queue in it, and nothing written to or
+dropped from storage; PostgreSQL databases always build their own. The last four distinct statement
+lists are kept, keyed by dialect, feature flags, proto descriptors and every statement byte for
+byte. Set `SPANNER_EMULATOR_DISABLE_SCHEMA_CACHE=1` on the container to build every database.
+
 **A schema change does not keep a snapshot per statement**
 (`backend/schema/updater/schema_updater.cc`). Upstream keeps the schema snapshot of every statement
 of a change until the change ends, because the backfills and verifiers that run at the end read
-them, and a snapshot is a copy of every node: 800 MB for our 506 statements, three creates at
+them, and a snapshot is a copy of every node: 800 MB for the 506 statements above, three creates at
 once 2.8 GB, most of it never returned. A snapshot is now released as soon as neither its own
 statement nor the next has a backfill or verifier left to run. A create runs them right after each
 statement, since an empty database has no rows a later statement could still invalidate, and so

@@ -122,6 +122,20 @@ looks up each column's number once per call, not once per row. Writing 20,000 ro
 (600 bytes of strings each) added 70 MB of resident memory before and 38 MB now, 3.5 KB a row to
 1.9 KB.
 
+**Freed memory goes back to the system** (`common/memory_release.*`, `binaries/emulator_main.cc`,
+`frontend/entities/database.*`, `frontend/collections/*`, `frontend/handlers/databases.cc`).
+tcmalloc returns free pages to the system only from a background thread the program starts, and
+upstream starts none, so the emulator's resident memory never fell: a dropped database's memory was
+reused by the next one but never given back. `emulator_main` now starts that thread, releasing up to
+32 MiB/s of free memory and draining the caches of idle CPUs, and a database's destruction releases
+all free memory at once. A dropped database was also kept whole by any session idle past its hour:
+the drop deleted only the sessions `ListSessions` returns, which leaves those out, and each holds its
+database. The drop now deletes every session of the database, and both the session and database
+maps let the last reference go after their lock is released, so freeing a large database does not
+stall every other request. Set `SPANNER_EMULATOR_DISABLE_MEMORY_RELEASE=1` on the container to keep
+the allocator's free memory as before. Dropping the database of the measurements above: 321 MB to
+303 MB before, 201 MB to 73 MB now.
+
 **Phase timers** (`common/phase_timer.*`): with `SPANNER_EMULATOR_PHASE_TIMERS=1` on the container,
 the server prints per-phase wall time and per-table rows read to stderr after each quiet second.
 Off, each timer is one branch.

@@ -49,6 +49,16 @@ strings, bytes, integers and booleans instead of `LessThan` and then `Equals`: a
 **A modifying or graph statement is analyzed once** (`backend/query/query_engine.cc`): both need an
 analysis that keeps every column, which is known from the statement text before the first pass.
 
+**A schema change does not keep a snapshot per statement**
+(`backend/schema/updater/schema_updater.cc`). Upstream keeps the schema snapshot of every statement
+of a change until the change ends, because the backfills and verifiers that run at the end read
+them, and a snapshot is a copy of every node: 800 MB for our 506 statements, three creates at
+once 2.8 GB, most of it never returned. A snapshot is now released as soon as neither its own
+statement nor the next has a backfill or verifier left to run. A create runs them right after each
+statement, since an empty database has no rows a later statement could still invalidate, and so
+holds two snapshots at most; an update still applies every statement first and keeps the snapshots
+its backfills read. The emulator's memory after that create: 800 MB to 64 MB.
+
 **Phase timers** (`common/phase_timer.*`): with `SPANNER_EMULATOR_PHASE_TIMERS=1` on the container,
 the server prints per-phase wall time and per-table rows read to stderr after each quiet second.
 Off, each timer is one branch.

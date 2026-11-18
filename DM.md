@@ -1,28 +1,7 @@
 # Digital Mirror's emulator
 
-This branch is upstream `v1.5.58` plus the commits below, published as
+This branch is upstream `v1.5.59` plus the commits below, published as
 `ghcr.io/digitalmirrorai/cloud-spanner-emulator:<upstream version>-dm.<n>`.
-
-**The clock follows the system clock** (`common/clock.cc`). Upstream's clock steps a microsecond
-ahead of the system clock on every call made within a microsecond of the last, and never comes
-back; a strong read waits for the system clock to reach its timestamp, so every read and query
-waits the whole lead. A container that has served a day's requests answers a key read in tens of
-milliseconds instead of one. Upstream accepted this change in issue #277 in October 2025 and has not
-released it.
-
-**A client's clock may be allowed to sit a little ahead of this one** (`common/clock.cc`,
-`backend/actions/column_value.cc`, `backend/transaction/commit_timestamp.cc`). A commit timestamp
-the client supplies is compared against this process's clock, which is the client's clock only when
-both share a host. Under Docker Desktop on macOS or Windows the client is on the host and the
-emulator is in a VM whose clock drifts behind it, so a timestamp taken moments ago arrives here in
-the future and the write is refused with `FAILED_PRECONDITION: Cannot write timestamps in the
-future`. Measured on an idle Mac the host ran 1.2-3.9 ms ahead; a loaded one is worse. Reads already
-tolerate an hour of this (`kMaxFutureReadDuration`, `frontend/handlers/reads.cc`); writes tolerate
-nothing, so a `cup/api` suite shed a few hundred tests to it. Set
-`SPANNER_EMULATOR_MAX_CLIENT_CLOCK_SKEW_MS` to the number of milliseconds a client may run ahead and
-both write checks allow that much; unset, or set to `0`, the comparison is exactly upstream's. The
-clock itself is untouched: timestamps this emulator assigns stay on system time, so nothing it
-stores is ever dated ahead of the client's own clock.
 
 **A query reads only the keys its filters allow** (`backend/query/queryable_table.cc`). Upstream
 reads every row of every table a query names and lets the evaluator filter. The evaluator offers its
@@ -59,11 +38,6 @@ stream, then hands it to `ExecuteSql` to be analyzed again. A change stream quer
 has no change streams or the statement mentions no `read_` at all. `SELECT 1` through the Java
 client: 5.4 ms to 0.9 ms, what the non-streaming path already cost.
 
-**A schema change is linear in the schema** (`backend/schema/graph/schema_graph_editor.*`). Cloning the
-schema graph for a DDL statement asked, for every node reference it fixed up, whether the node was
-original by scanning the whole graph; a set lookup now. Creating a database from 394 statements:
-7 s to 1.5 s.
-
 **A read whose timestamp has passed does not sleep** (`backend/locking/manager.cc`). A timed wait on
 a deadline already behind still costs the kernel's timer slack, 50 µs, and a strong read asked five
 times per statement.
@@ -78,6 +52,13 @@ analysis that keeps every column, which is known from the statement text before 
 **Phase timers** (`common/phase_timer.*`): with `SPANNER_EMULATOR_PHASE_TIMERS=1` on the container,
 the server prints per-phase wall time and per-table rows read to stderr after each quiet second.
 Off, each timer is one branch.
+
+## Taken upstream
+
+Two of this branch's patches are in upstream v1.5.59, so the branch no longer carries them: **the
+clock follows the system clock** (`common/clock.cc`, upstream issue #389), and **a schema change is
+linear in the schema** (`backend/schema/graph/schema_graph_editor.*`, a set lookup instead of a scan
+of the graph for every node reference a clone fixes up).
 
 ## Building
 

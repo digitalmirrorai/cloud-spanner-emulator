@@ -88,6 +88,27 @@ statement, since an empty database has no rows a later statement could still inv
 holds two snapshots at most; an update still applies every statement first and keeps the snapshots
 its backfills read. The emulator's memory after that create: 800 MB to 64 MB.
 
+**Old versions and deleted rows are removed** (`backend/storage/in_memory_storage.*`,
+`backend/schema/catalog/versioned_catalog.*`, `backend/transaction/read_only_transaction.cc`).
+Upstream keeps every row it ever held: a delete writes a marker into every cell of the row, so
+deleting adds memory, and a cell's old versions are trimmed only when that cell is written again,
+which a deleted row never is. A test suite that deletes its tenant's rows after every class grew the
+emulator by the size of every row it ever wrote. Now every write that gives a cell a second version,
+and every delete, queues its row; once the write is older than the version retention period the row
+is collected: in each cell everything older than the newest version at or before the horizon goes,
+and a row whose newest such version is its delete goes entirely. Every read the retention period
+allows sees what it saw before. Each write, delete and read-only read collects at most 256 due rows,
+or twice what it queued, so no call holds the storage lock long on the collector's account. The
+retention period is the database's `version_retention_period`, one hour unless set; set
+`SPANNER_EMULATOR_VERSION_RETENTION_S` on the container (whole seconds) to keep versions for at
+most that long in every database, as a test emulator can: a stale read, or a read-only transaction,
+older than it fails with `FAILED_PRECONDITION` as one older than the database's own period always
+did. A read is also refused below the newest horizon anything was collected at, which a shorter
+period that grew again leaves behind (upstream returned what was left). Ten cycles of writing and
+deleting 20,000 rows of seven columns in one database: 861 MB resident before, 210 MB with the
+variable at 5 s, flat from the third cycle on. Without it nothing is collected within the hour, as
+before.
+
 **Phase timers** (`common/phase_timer.*`): with `SPANNER_EMULATOR_PHASE_TIMERS=1` on the container,
 the server prints per-phase wall time and per-table rows read to stderr after each quiet second.
 Off, each timer is one branch.

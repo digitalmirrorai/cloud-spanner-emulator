@@ -73,9 +73,15 @@ void LockManager::EnqueueLock(LockHandle* handle, const LockRequest& request) {
     auto could_be_aborted = active_handle_->TryAbortTransaction(
         error::AbortCurrentTransaction(active_handle_->tid(), handle->tid()));
     if (could_be_aborted.ok()) {
+      if (phase_timer::Enabled()) {
+        phase_timer::Count("lock.conflict.aborted_holder", 1);
+      }
       active_handle_ = handle;
       return;
     }
+  }
+  if (phase_timer::Enabled()) {
+    phase_timer::Count("lock.conflict.aborted_newcomer", 1);
   }
 
   // Couldn't abort the transaction currently holding the lock, so abort the
@@ -109,6 +115,9 @@ absl::StatusOr<absl::Time> LockManager::ReserveCommitTimestamp(
     active_handle_ = handle;
   } else if (active_handle_->tid() != handle->tid()) {
     // There is another active transaction, abort this transaction.
+    if (phase_timer::Enabled()) {
+      phase_timer::Count("lock.conflict.aborted_at_commit", 1);
+    }
     return error::AbortConcurrentTransaction(handle->tid(),
                                              active_handle_->tid());
   }

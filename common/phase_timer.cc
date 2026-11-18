@@ -24,15 +24,21 @@ std::map<std::string, Totals>* totals ABSL_GUARDED_BY(mu) = nullptr;
 
 void PrintLoop() {
   // Prints and resets the totals once no scope has finished for a second, so a
-  // burst of one kind of request reads as one block.
+  // burst of one kind of request reads as one block, and every ten seconds
+  // under a load that never pauses, so a container removed at the end of a run
+  // has printed all but its last seconds.
+  int64_t last_print_nanos = NowNanos();
   while (true) {
     absl::SleepFor(absl::Milliseconds(250));
     std::map<std::string, Totals> snapshot;
     {
       absl::MutexLock lock(&mu);
-      if (totals->empty() || NowNanos() - last_record_nanos < 1000000000) {
+      const int64_t now = NowNanos();
+      if (totals->empty() || (now - last_record_nanos < 1000000000 &&
+                              now - last_print_nanos < 10000000000)) {
         continue;
       }
+      last_print_nanos = now;
       snapshot.swap(*totals);
     }
     std::fprintf(stderr, "=== phase timers ===\n");

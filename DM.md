@@ -156,6 +156,24 @@ runs in this repository. To iterate, keep the build stage
 and run `bazel build -c opt //binaries:emulator_main //binaries:gateway_main` there; a rebuild after
 a source change takes minutes.
 
+## Publishing an image
+
+The image is `ghcr.io/digitalmirrorai/cloud-spanner-emulator:<upstream version>-dm.<n>`, one tag
+for amd64 and arm64, built from the git tag `v<upstream version>-dm.<n>`. Each architecture is built
+on a machine of that architecture (arm64 on an Apple Silicon Mac; give Docker Desktop 16 GB) and
+pushed under its own tag, and the shared tag is then made from the two:
+
+```
+docker build . -f build/docker/Dockerfile.ubuntu -t ghcr.io/digitalmirrorai/cloud-spanner-emulator:<tag>-<arch>
+docker push ghcr.io/digitalmirrorai/cloud-spanner-emulator:<tag>-<arch>
+docker buildx imagetools create -t ghcr.io/digitalmirrorai/cloud-spanner-emulator:<tag> \
+  ghcr.io/digitalmirrorai/cloud-spanner-emulator:<tag>-amd64 \
+  ghcr.io/digitalmirrorai/cloud-spanner-emulator:<tag>-arm64
+```
+
+Do not point clients at a tag before it holds both: a Mac that pulls a tag without an arm64 image
+either fails or runs the emulator under emulation, and keeps whichever it cached.
+
 ## Taking a new upstream release
 
 Rebase the commits onto the new tag, rerun `bazel test //common:clock_test
